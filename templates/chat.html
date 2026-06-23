@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Диалог о {{ gate }}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-header">
+            <h2>Тема: {{ gate }}</h2>
+            <p class="essence">{{ essence }}</p>
+            <a href="/">← На главную</a>
+        </div>
+        <div class="chat-messages" id="messages">
+            {% for msg in history %}
+                <div class="message {{ msg.role }}">
+                    <strong>{{ msg.role }}:</strong> {{ msg.content }}
+                </div>
+            {% endfor %}
+        </div>
+        <div class="chat-input">
+            <textarea id="user-input" placeholder="Напишите свой ответ..."></textarea>
+            <button onclick="sendMessage()">Отправить</button>
+        </div>
+    </div>
+    <script>
+        const sessionId = "{{ session_id }}";
+        const messagesContainer = document.getElementById('messages');
+        const userInput = document.getElementById('user-input');
+
+        async function sendMessage() {
+            const text = userInput.value.trim();
+            if (!text) return;
+            // Добавляем сообщение пользователя в интерфейс
+            const userDiv = document.createElement('div');
+            userDiv.className = 'message user';
+            userDiv.innerHTML = `<strong>Вы:</strong> ${text}`;
+            messagesContainer.appendChild(userDiv);
+            userInput.value = '';
+            // Отправляем на сервер
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ session_id: sessionId, message: text })
+            });
+            const data = await response.json();
+            if (data.response) {
+                const botDiv = document.createElement('div');
+                botDiv.className = 'message assistant';
+                botDiv.innerHTML = `<strong>Агент:</strong> ${data.response}`;
+                messagesContainer.appendChild(botDiv);
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+        }
+
+        userInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Прокрутка вниз при загрузке
+        window.onload = function() {
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        };
+    </script>
+</body>
+</html>
