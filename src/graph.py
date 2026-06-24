@@ -103,3 +103,27 @@ builder.add_edge("final", END)
 builder.add_edge("error", END)
 
 graph = builder.compile()
+
+# src/graph.py (добавить в конец или изменить)
+
+def evaluate_and_save_tip(state: AgentState) -> AgentState:
+    """
+    Узел, который оценивает качество совета и принимает решение о сохранении.
+    """
+    # Здесь state должен содержать сгенерированный совет и диалог
+    if not state.get('tip'):
+        state['messages'].append(AIMessage(content="Совет не сгенерирован."))
+        return state
+
+    # Простейшая логика: если совет содержит больше 10 слов, сохраняем
+    # Можно заменить на запрос к LLM для оценки
+    advice = state['tip']
+    if len(advice.split()) > 10:
+        # Вызываем инструмент сохранения
+        gate_line = state.get('gate_line', '0.0')
+        dialog_summary = "..."  # можно сгенерировать кратко
+        result = save_advice_tool(gate_line, advice, dialog_summary)
+        state['messages'].append(AIMessage(content=f"Совет сохранён: {result}"))
+    else:
+        state['messages'].append(AIMessage(content="Совет слишком короткий, не сохранён."))
+    return state

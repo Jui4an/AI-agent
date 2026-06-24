@@ -1,6 +1,10 @@
 from typing import List, Tuple
+from datetime import datetime
 from langchain.tools import tool
 from pydantic import BaseModel, Field, ValidationError
+
+from .db_tips import save_tip
+from .models import Tip
 
 from database import get_today_numbers, parse_number_pair
 from rag import get_description_for_number
@@ -62,3 +66,19 @@ def validate_numbers(pairs_str: str) -> str:
 if __name__ == "__main__":
     print(get_numbers_from_db.invoke({}))
     print(get_descriptions_for_numbers.invoke({"pairs_str": "12.3, 5.2, 10.6, 1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 7.1, 8.2, 9.3, 10.4"}))
+
+@tool
+def save_advice_tool(gate_line: str, advice: str, dialog_summary: str = "") -> str:
+    """
+    Сохраняет совет в базу данных.
+    gate_line: строка вида "X.Y"
+    advice: текст совета (3-5 предложений)
+    dialog_summary: краткое содержание диалога (опционально)
+    """
+    try:
+        # Валидация через Pydantic
+        tip = Tip(gate_line=gate_line, advice=advice, dialog_summary=dialog_summary, date=datetime.now().strftime("%Y-%m-%d"))
+        tip_id = save_tip(tip.gate_line, tip.advice, tip.dialog_summary, tip.date)
+        return f"Совет сохранён с ID {tip_id}"
+    except Exception as e:
+        return f"Ошибка сохранения совета: {e}"

@@ -3,3 +3,8 @@ langgraph
 langchain-openai
 openai
 pydantic
+fastapi
+uvicorn
+jinja2
+python-multipart
+aiosqlite
