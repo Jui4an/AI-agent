@@ -8,7 +8,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timedelta
-from agent_wrapper import call_model, MODEL_NAME, BIG_MODEL_NAME
+from agent_wrapper import call_model
+from settings_manager import get_model_name, get_big_model_name
+
+MODEL_NAME = get_model_name()
+BIG_MODEL_NAME = get_big_model_name()
 from db_tips import get_tips, save_tip
 from rag import get_description_for_number
 

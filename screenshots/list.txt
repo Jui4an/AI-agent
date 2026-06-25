@@ -1,0 +1,6 @@
+01-main-page.png
+02-chat-dialogue.png
+03-dashboard-logs.png
+04-architecture.png
+05-settings.png
+06-upcoming add to.png

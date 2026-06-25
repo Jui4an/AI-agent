@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  magnolia-agent:
+    build: .
+    container_name: magnolia-agent
+    ports:
+      - "8001:8001"
+      - "8002:8002"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./.env:/app/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped

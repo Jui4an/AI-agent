@@ -1,0 +1,3 @@
+LANGFUSE_SECRET_KEY="KEY"
+LANGFUSE_PUBLIC_KEY="KEY"
+LANGFUSE_BASE_URL="https://cloud.langfuse.com"
