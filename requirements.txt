@@ -1,10 +1,7 @@
-langchain
-langgraph
-langchain-openai
 openai
+langfuse
+python-dotenv
 pydantic
 fastapi
 uvicorn
-jinja2
-python-multipart
-aiosqlite
+httpx

@@ -1,0 +1,86 @@
+{
+  "name": "Human Design Agent Benchmark (мягкий)",
+  "version": "2.0",
+  "tests": [
+    {
+      "id": "test_001",
+      "gate_line": "10.6",
+      "input": "Привет! Что значит эта энергия для меня сегодня?",
+      "expected_output_contains": ["энергия", "сегодня", "10", "6"],
+      "expected_output_not_contains": ["Error", "неизвестно", "не найдено"],
+      "min_length": 50
+    },
+    {
+      "id": "test_002",
+      "gate_line": "1.2",
+      "input": "Я чувствую, что сегодня хочу быть один. Это нормально?",
+      "expected_output_contains": ["энергия", "сегодня", "1", "2"],
+      "expected_output_not_contains": ["Error", "неизвестно", "не найдено"],
+      "min_length": 50
+    },
+    {
+      "id": "test_003",
+      "gate_line": "3.4",
+      "input": "Почему я постоянно всё усложняю?",
+      "expected_output_contains": ["энергия", "3", "4"],
+      "expected_output_not_contains": ["Error", "неизвестно", "не найдено"],
+      "min_length": 50
+    },
+    {
+      "id": "test_004",
+      "gate_line": "9.2",
+      "input": "У меня много идей, но я не могу сосредоточиться на одной",
+      "expected_output_contains": ["энергия", "9", "2"],
+      "expected_output_not_contains": ["Error", "неизвестно", "не найдено"],
+      "min_length": 50
+    },
+    {
+      "id": "test_005",
+      "gate_line": "16.5",
+      "input": "Я хочу перемен, но боюсь их. Как быть?",
+      "expected_output_contains": ["энергия", "16", "5"],
+      "expected_output_not_contains": ["Error", "неизвестно", "не найдено"],
+      "min_length": 50
+    },
+    {
+      "id": "test_006",
+      "gate_line": "25.3",
+      "input": "Сегодня я чувствую себя отстранённым и спокойным",
+      "expected_output_contains": ["энергия", "25", "3"],
+      "expected_output_not_contains": ["Error", "неизвестно", "не найдено"],
+      "min_length": 50
+    },
+    {
+      "id": "test_007",
+      "gate_line": "42.1",
+      "input": "Как мне понять, что я на правильном пути?",
+      "expected_output_contains": ["энергия", "42", "1"],
+      "expected_output_not_contains": ["Error", "неизвестно", "не найдено"],
+      "min_length": 50
+    },
+    {
+      "id": "test_008",
+      "gate_line": "55.6",
+      "input": "Я чувствую сильное внутреннее напряжение",
+      "expected_output_contains": ["энергия", "55", "6"],
+      "expected_output_not_contains": ["Error", "неизвестно", "не найдено"],
+      "min_length": 50
+    },
+    {
+      "id": "test_009",
+      "gate_line": "62.4",
+      "input": "Почему я постоянно зацикливаюсь на деталях?",
+      "expected_output_contains": ["энергия", "62", "4"],
+      "expected_output_not_contains": ["Error", "неизвестно", "не найдено"],
+      "min_length": 50
+    },
+    {
+      "id": "test_010",
+      "gate_line": "64.2",
+      "input": "Как мне завершить начатое дело?",
+      "expected_output_contains": ["энергия", "64", "2"],
+      "expected_output_not_contains": ["Error", "неизвестно", "не найдено"],
+      "min_length": 50
+    }
+  ]
+}

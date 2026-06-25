@@ -1,30 +1,42 @@
 import os
 import httpx
+import subprocess
+import asyncio
+import uuid
 
-from fastapi import FastAPI, Request, HTTPException
+from pathlib import Path
+from datetime import datetime
+
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from datetime import datetime
-import uuid
+
+from pydantic import ValidationError
 
 from .post_generator import generate_post_content
 from .db_posts import init_db, get_post, save_post
 from .session_manager import create_session, get_session, add_message, sessions
 from .rag import get_description_for_number
-from .models import ChatRequest
-
-# ===== НОВЫЕ ИМПОРТЫ ДЛЯ СОВЕТОВ =====
-from .models import Tip
+from .models import ChatRequest, Tip
+from .settings_manager import load_settings, save_settings, get_model_url, get_model_name, get_big_model_name
 from .db_tips import get_tips, save_tip
-from pydantic import ValidationError
-
-# ===== ИМПОРТ ОБЁРТКИ ДЛЯ МОДЕЛЕЙ =====
 from .agent_wrapper import generate_response, generate_summary
+from .dashboard import dashboard_app
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
+app.mount("/dashboard", dashboard_app)
 
 init_db()
+
+def write_log(message: str):
+    """Записывает сообщение в лог-файл."""
+    log_path = Path(__file__).parent.parent / "logs" / "app.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(log_path, 'a', encoding='utf-8') as f:
+        f.write(f"[{timestamp}] {message}\n")
+    print(f"[{timestamp}] {message}")  # Также выводим в консоль
 
 async def call_mcp_agent(gate_line: str, advice: str, dialog_summary: str, history: list) -> dict:
     """
@@ -69,8 +81,10 @@ async def call_mcp_agent(gate_line: str, advice: str, dialog_summary: str, histo
 @app.get("/", response_class=HTMLResponse)
 async def index():
     today = datetime.now().strftime("%Y-%m-%d")
-    post_content = generate_post_content(today) 
-    save_post(today, post_content)
+    post_content = get_post(today)
+    if post_content is None:
+        post_content = generate_post_content(today)
+        save_post(today, post_content)
     
     html = f"""
     <!DOCTYPE html>
@@ -85,6 +99,10 @@ async def index():
         <header>
             <h1>Как вы проживаете вот эти энергии?</h1>
             <p class="subtitle">Транзиты на {today}</p>
+            <p>
+                <a href="/dashboard" style="color: #6c8cff; text-decoration: none; margin-right: 15px;">📊 Dashboard</a>
+                <a href="/settings" style="color: #6c8cff; text-decoration: none;">⚙️ Настройки</a>
+            </p>
         </header>
         <main>
             {post_content}
@@ -93,6 +111,32 @@ async def index():
     </html>
     """
     return HTMLResponse(content=html)
+
+# ============ API для проверки моделей ============
+@app.get("/api/check_models")
+async def check_models():
+    """Проверяет доступность LM Studio/Ollama и возвращает список моделей."""
+    settings = load_settings()
+    url = settings.get("model_url", "").rstrip('/')
+    if not url:
+        return JSONResponse({"error": "URL модели не задан"}, status_code=400)
+    
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{url}/models")
+            resp.raise_for_status()
+            data = resp.json()
+            models = [m.get("id", str(m)) for m in data.get("data", [])]
+            return JSONResponse({
+                "success": True,
+                "url": url,
+                "models": models,
+                "count": len(models)
+            })
+    except httpx.ConnectError:
+        return JSONResponse({"error": "Не удалось подключиться к серверу"}, status_code=503)
+    except Exception as e:
+        return JSONResponse({"error": f"Ошибка: {str(e)}"}, status_code=500)
 
 # ============ Страница чата ============
 @app.get("/chat", response_class=HTMLResponse)
@@ -119,7 +163,6 @@ async def chat_page(request: Request, gate: str):
         content = msg["content"]
         messages_html += f'<div class="message {role}"><strong>{role}:</strong> {content}</div>\n'
     
-    # ===== ДОБАВЛЯЕМ КНОПКУ И БЛОК ДЛЯ СОВЕТА =====
     html = f"""
     <!DOCTYPE html>
     <html lang="ru">
@@ -134,7 +177,11 @@ async def chat_page(request: Request, gate: str):
             <div class="chat-header">
                 <h2>Тема: {gate}</h2>
                 <p class="essence">{desc}</p>
-                <a href="/">← На главную</a>
+                <p style="margin: 10px 0;">
+                    <a href="/">← На главную</a>
+                    <span style="margin: 0 10px; color: #ccc;">|</span>
+                    <a href="/dashboard" style="color: #6c8cff; text-decoration: none;">📊 Dashboard</a>
+                </p>
             </div>
             <div class="chat-messages" id="messages">
                 {messages_html}
@@ -143,7 +190,6 @@ async def chat_page(request: Request, gate: str):
                 <textarea id="user-input" placeholder="Напишите свой ответ..."></textarea>
                 <button onclick="sendMessage()">Отправить</button>
             </div>
-            <!-- НОВЫЙ БЛОК: завершение диалога -->
             <div class="finish-section" style="margin-top: 30px; text-align: center;">
                 <button id="finish-btn" onclick="finishChat()" style="
                     background: linear-gradient(135deg, #6c8cff, #4a6cf7);
@@ -201,7 +247,6 @@ async def chat_page(request: Request, gate: str):
                 }}
             }});
 
-            // ===== НОВАЯ ФУНКЦИЯ ДЛЯ ЗАВЕРШЕНИЯ ДИАЛОГА =====
             async function finishChat() {{
                 const btn = document.getElementById('finish-btn');
                 btn.disabled = true;
@@ -239,11 +284,111 @@ async def chat_page(request: Request, gate: str):
     """
     return HTMLResponse(content=html)
 
+# ============ API для получения советов ============
 @app.get("/api/tips")
 async def get_all_tips(gate: str = None, date: str = None):
     """Возвращает все сохранённые советы, можно фильтровать по gate или date."""
     tips = get_tips(gate_line=gate, date=date)
     return JSONResponse(tips)
+
+# ============ Страница настроек ============
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page():
+    settings = load_settings()
+    html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Настройки моделей</title>
+        <style>
+            body {{ font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 20px; }}
+            label {{ display: block; margin: 15px 0 5px; font-weight: bold; }}
+            input {{ width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; }}
+            button {{ margin-top: 10px; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }}
+            .btn-save {{ background: #6c8cff; color: white; }}
+            .btn-check {{ background: #4CAF50; color: white; }}
+            .nav {{ margin-bottom: 20px; }}
+            #models-list {{ margin-top: 10px; padding: 10px; background: #f5f5f5; border-radius: 5px; display: none; }}
+            #models-list ul {{ margin: 5px 0; padding-left: 20px; }}
+            #models-list code {{ background: #e0e0e0; padding: 2px 6px; border-radius: 3px; font-size: 13px; }}
+        </style>
+    </head>
+    <body>
+        <div class="nav"><a href="/">← На главную</a></div>
+        <h1>⚙️ Настройки моделей</h1>
+        <form id="settings-form">
+            <label>URL модели (LM Studio/Ollama):</label>
+            <input type="text" id="model_url" value="{settings.get('model_url', '')}" placeholder="http://localhost:1234/v1">
+            
+            <label>Название маленькой модели:</label>
+            <input type="text" id="model_name" value="{settings.get('model_name', '')}" placeholder="qwen/qwen3-vl-8b">
+            
+            <label>Название большой модели:</label>
+            <input type="text" id="big_model_name" value="{settings.get('big_model_name', '')}" placeholder="qwen3.6-35b...">
+            
+            <div style="display: flex; gap: 10px; margin-top: 15px;">
+                <button type="submit" class="btn-save">💾 Сохранить</button>
+                <button type="button" class="btn-check" onclick="checkModels()">🔍 Проверить модели</button>
+            </div>
+        </form>
+        <div id="models-list"></div>
+        <div id="message" style="margin-top:15px; color:green;"></div>
+
+        <script>
+            async function checkModels() {{
+                const container = document.getElementById('models-list');
+                container.style.display = 'block';
+                container.innerHTML = '⏳ Проверка подключения...';
+                
+                try {{
+                    const resp = await fetch('/api/check_models');
+                    const data = await resp.json();
+                    if (data.error) {{
+                        container.innerHTML = `<span style="color:red;">❌ ${{data.error}}</span>`;
+                    }} else if (data.models && data.models.length > 0) {{
+                        let html = `<strong>✅ Найдено ${{data.count}} моделей:</strong><ul>`;
+                        data.models.forEach(m => {{
+                            html += `<li><code>${{m}}</code></li>`;
+                        }});
+                        html += '</ul>';
+                        html += `<p style="font-size:12px; color:#666; margin-top:5px;">URL: ${{data.url}}</p>`;
+                        container.innerHTML = html;
+                    }} else {{
+                        container.innerHTML = '⚠️ Модели не найдены';
+                    }}
+                }} catch (e) {{
+                    container.innerHTML = `<span style="color:red;">❌ Ошибка: ${{e.message}}</span>`;
+                }}
+            }}
+
+            document.getElementById('settings-form').addEventListener('submit', async (e) => {{
+                e.preventDefault();
+                const data = {{
+                    model_url: document.getElementById('model_url').value,
+                    model_name: document.getElementById('model_name').value,
+                    big_model_name: document.getElementById('big_model_name').value
+                }};
+                const resp = await fetch('/api/settings', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify(data)
+                }});
+                const result = await resp.json();
+                document.getElementById('message').textContent = result.message || 'Сохранено!';
+                setTimeout(() => document.getElementById('message').textContent = '', 3000);
+            }});
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html)
+
+@app.post("/api/settings")
+async def save_settings_api(request: Request):
+    data = await request.json()
+    save_settings(data)
+    return JSONResponse({"message": "Настройки сохранены"})
 
 # ============ API для отправки сообщений ============
 @app.post("/api/chat")
@@ -268,7 +413,6 @@ async def chat_api(request: Request):
     add_message(session_id, "user", user_message)
     history = session["history"]
     
-    # Используем агента для генерации ответа
     prompt = user_message
     response_text = generate_response(
         prompt=prompt,
@@ -280,7 +424,7 @@ async def chat_api(request: Request):
     add_message(session_id, "assistant", response_text)
     return JSONResponse({"response": response_text})
 
-# ============ НОВЫЙ ЭНДПОИНТ: завершение чата и сохранение совета ============
+# ============ Эндпоинт: завершение чата и сохранение совета ============
 @app.post("/api/finish_chat")
 async def finish_chat(request: Request):
     try:
@@ -304,17 +448,14 @@ async def finish_chat(request: Request):
         if len(history) < 2:
             return JSONResponse({"error": "Диалог слишком короткий для совета"}, status_code=400)
         
-        # Генерация совета
         try:
             summary = generate_summary(history, gate_line, desc)
         except Exception as e:
             return JSONResponse({"error": f"Ошибка генерации совета: {str(e)}"}, status_code=500)
         
-        # Вызов MCP-агента (с fallback)
         try:
             mcp_result = await call_mcp_agent(gate_line, summary, "", history)
         except Exception as e:
-            # Если MCP не работает, сохраняем как есть
             mcp_result = {
                 "should_save": True,
                 "enriched_advice": summary,
@@ -322,22 +463,20 @@ async def finish_chat(request: Request):
                 "score": 70
             }
         
-        # Обработка результата MCP
         if mcp_result["should_save"]:
             final_advice = mcp_result["enriched_advice"]
-            # Валидация и сохранение через Pydantic
             try:
                 tip = Tip(
                     gate_line=gate_line,
                     advice=final_advice,
-                    dialog_summary="",   # можно добавить краткое содержание диалога
+                    dialog_summary="",
                     date=datetime.now().strftime("%Y-%m-%d")
                 )
                 tip_id = save_tip(tip.gate_line, tip.advice, tip.dialog_summary, tip.date)
                 save_result = f"Совет сохранён с ID {tip_id} (оценка: {mcp_result['score']})"
             except ValidationError as e:
                 save_result = f"Ошибка валидации: {e}"
-                final_advice = summary  # на случай ошибки показываем исходный совет
+                final_advice = summary
             except Exception as e:
                 save_result = f"Ошибка сохранения: {e}"
                 final_advice = summary
@@ -345,7 +484,6 @@ async def finish_chat(request: Request):
             final_advice = summary
             save_result = f"Совет не сохранён: {mcp_result['reason']}"
         
-        # Сохраняем в сессии
         session["summary"] = final_advice
         session["save_result"] = save_result
         
@@ -361,3 +499,66 @@ async def regenerate_post():
     content = generate_post_content(today)
     save_post(today, content)
     return JSONResponse({"status": "ok", "date": today})
+
+# ============ API для запуска тестов ============
+@app.post("/api/run_tests")
+async def run_tests():
+    write_log("Запуск тестов (pytest)...")
+    try:
+        result = subprocess.run(
+            ["pytest", "tests/", "-v", "--tb=short"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent
+        )
+        # Защита от None
+        stdout = result.stdout if result.stdout is not None else ""
+        stderr = result.stderr if result.stderr is not None else ""
+        output = stdout + "\n" + stderr
+        write_log(f"Тесты завершены (код: {result.returncode})")
+        return JSONResponse({"output": output})
+    except Exception as e:
+        write_log(f"Ошибка тестов: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+# ============ API для запуска Benchmark ============
+@app.post("/api/run_benchmark")
+async def run_benchmark():
+    write_log("Запуск Benchmark...")
+    try:
+        result = subprocess.run(
+            ["python", "src/run_benchmark.py"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).parent.parent
+        )
+        # Защита от None
+        stdout = result.stdout if result.stdout is not None else ""
+        stderr = result.stderr if result.stderr is not None else ""
+        output = stdout + "\n" + stderr
+        write_log(f"Benchmark завершён (код: {result.returncode})")
+        return JSONResponse({"output": output})
+    except Exception as e:
+        write_log(f"Ошибка Benchmark: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+# ============ API для просмотра логов ============
+@app.get("/api/logs")
+async def get_logs(log_type: str = "app"):
+    """Возвращает последние 50 строк логов. log_type: 'app' или 'model'."""
+    if log_type == "model":
+        log_file = "model.log"
+    else:
+        log_file = "app.log"
+    
+    log_path = Path(__file__).parent.parent / "logs" / log_file
+    if not log_path.exists():
+        return JSONResponse({"logs": []})
+    try:
+        with open(log_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        last_lines = lines[-50:] if len(lines) > 50 else lines
+        logs = [{"timestamp": "", "message": line.strip()} for line in last_lines]
+        return JSONResponse({"logs": logs})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)

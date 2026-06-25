@@ -1,41 +1,166 @@
 # src/agent_wrapper.py
-from openai import OpenAI
+import sys
+from pathlib import Path
+
+# Добавляем текущую папку в sys.path для корректных импортов
+sys.path.insert(0, str(Path(__file__).parent))
+
+import os
+import time
 from typing import List, Dict, Optional
+from openai import OpenAI
 
-# ===== НАСТРОЙКИ МОДЕЛЕЙ =====
-MODEL_URL = "http://10.164.224.226:1234/v1"          # или localhost
-MODEL_NAME = "qwen/qwen3-vl-8b"                      # основная модель
-BIG_MODEL_NAME = "eva-qwen2.5-14b-v0.2"  # большая (если доступна)
+from settings_manager import get_model_url, get_model_name, get_big_model_name
 
-def call_model(messages: List[Dict[str, str]], model_name: str = None) -> str:
+# ============================================================
+# 1. ЗАГРУЗКА .env (переменные окружения)
+# ============================================================
+# Пытаемся загрузить через python-dotenv (если установлен)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("[OK] python-dotenv загружен")
+except ImportError:
+    # Если dotenv не установлен — загружаем вручную
+    print("[WARN] python-dotenv не найден, загружаем .env вручную")
+    env_file = Path(__file__).parent.parent / ".env"
+    if env_file.exists():
+        with open(env_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    if '=' in line:
+                        key, value = line.split('=', 1)
+                        os.environ[key] = value.strip()
+                        print(f"   Загружено: {key}=***")
+
+# ============================================================
+# 2. ИНИЦИАЛИЗАЦИЯ LANGFUSE
+# ============================================================
+# Используем Langfuse класс (НЕ get_client) для ручного трейсинга
+try:
+    from langfuse import Langfuse
+    
+    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+    host = os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com")
+    
+    if public_key and secret_key:
+        langfuse = Langfuse(
+            public_key=public_key,
+            secret_key=secret_key,
+            host=host
+        )
+        print(f"[OK] LangFuse инициализирован: {host}")
+        print(f"   Public Key: {public_key[:10]}...")
+    else:
+        print("[WARN] LangFuse ключи не найдены. Трейсы не будут отправляться.")
+        langfuse = None
+        
+except ImportError:
+    print("[WARN] LangFuse не установлен. Установите: pip install langfuse")
+    langfuse = None
+except Exception as e:
+    print(f"[WARN] Ошибка инициализации LangFuse: {e}")
+    langfuse = None
+
+# ============================================================
+# 3. ОСНОВНАЯ ФУНКЦИЯ ВЫЗОВА МОДЕЛИ
+# ============================================================
+def call_model(messages: List[Dict[str, str]], model_name: str = None, metadata: Dict = None) -> str:
     """
-    Вызов модели с возможностью указать имя модели.
-    Если model_name не указан, используется MODEL_NAME.
+    Вызывает модель через OpenAI-совместимый API.
+    Если LangFuse доступен — создаёт трейс и span.
     """
     if model_name is None:
-        model_name = MODEL_NAME
-    client = OpenAI(base_url=MODEL_URL, api_key="not-needed", timeout=30.0)
+        model_name = get_model_name()
+    url = get_model_url()
+    
+    # ===== ЛОГИРОВАНИЕ НАЧАЛА =====
+    from datetime import datetime
+    from pathlib import Path
+    log_path = Path(__file__).parent.parent / "logs" / "app.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    log_msg = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] CALL_MODEL START: model={model_name}, function={metadata.get('function', 'unknown') if metadata else 'unknown'}"
+    print(log_msg)
+    with open(log_path, 'a', encoding='utf-8') as f:
+        f.write(log_msg + "\n")
+    
+    # Создаём клиент OpenAI
+    client = OpenAI(base_url=url, api_key="not-needed", timeout=60.0)
+    
+    # ---- LangFuse ручной трейсинг ----
+    trace = None
+    span = None
+    if langfuse:
+        try:
+            trace = langfuse.trace(
+                name="call_model",
+                metadata=metadata or {},
+                tags=["human_design", "agent", model_name]
+            )
+            span = trace.span(
+                name="llm_call",
+                input={"messages": messages, "model": model_name, "url": url}
+            )
+        except Exception as e:
+            print(f"[WARN] LangFuse трейсинг ошибка: {e}")
+    
+    # ---- Вызов модели ----
     try:
+        # Лог перед вызовом
+        log_msg = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] CALL_MODEL: отправка запроса к {model_name}..."
+        print(log_msg)
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(log_msg + "\n")
+        
         response = client.chat.completions.create(
             model=model_name,
             messages=messages,
             temperature=0.85,
             max_tokens=600,
-            timeout=30.0,
+            timeout=60.0,
         )
-        return response.choices[0].message.content
+        result = response.choices[0].message.content
+        
+        # Лог после ответа
+        log_msg = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] CALL_MODEL DONE: получили ответ ({len(result)} символов)"
+        print(log_msg)
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(log_msg + "\n")
+        
+        # Закрываем span с результатом
+        if span:
+            span.update(output=result)
+            span.end()
+            langfuse.flush()
+        
+        return result
+        
     except Exception as e:
-        # Если большая модель недоступна, пробуем маленькую (если вызывали большую)
-        if model_name == BIG_MODEL_NAME and BIG_MODEL_NAME != MODEL_NAME:
-            print(f"Ошибка вызова большой модели ({model_name}): {e}. Пробую маленькую...")
-            try:
-                return call_model(messages, MODEL_NAME)
-            except Exception as e2:
-                return f"Ошибка вызова обеих моделей: {e2}"
-        return f"Ошибка вызова модели ({model_name}): {e}"
+        error_msg = f"Ошибка вызова модели: {e}"
+        
+        # Лог ошибки
+        log_msg = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] CALL_MODEL ERROR: {e}"
+        print(log_msg)
+        with open(log_path, 'a', encoding='utf-8') as f:
+            f.write(log_msg + "\n")
+        
+        if span:
+            span.update(output=error_msg, status="error")
+            span.end()
+            langfuse.flush()
+        
+        return error_msg
 
+# ============================================================
+# 4. ГЕНЕРАЦИЯ ОТВЕТА В ДИАЛОГЕ
+# ============================================================
 def generate_response(prompt: str, history: list = None, gate_line: str = None, gate_desc: str = None) -> str:
-    """Генерация ответа в диалоге (основная модель)."""
+    """
+    Генерирует ответ в чате. Использует системный промпт с ролью консультанта.
+    """
     if history is None:
         history = []
     
@@ -56,10 +181,23 @@ def generate_response(prompt: str, history: list = None, gate_line: str = None, 
 Твои ответы — это приглашение к исследованию себя."""
     
     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": prompt}]
-    return call_model(messages, MODEL_NAME)
+    
+    metadata = {
+        "gate_line": gate_line or "unknown",
+        "gate_desc": gate_desc or "unknown",
+        "function": "generate_response"
+    }
+    
+    return call_model(messages, metadata=metadata)
 
+# ============================================================
+# 5. ГЕНЕРАЦИЯ СОВЕТА (ЛАЙФХАК) НА ОСНОВЕ ДИАЛОГА
+# ============================================================
 def generate_summary(history: list, gate_line: str, gate_desc: str) -> str:
-    """Генерирует лайфхак-совет. Сначала пытается использовать большую модель, при ошибке – маленькую."""
+    """
+    Анализирует диалог и генерирует короткий практичный совет.
+    Сначала пытается использовать большую модель, при ошибке — маленькую.
+    """
     dialog_text = ""
     for msg in history:
         role = "Консультант" if msg["role"] == "assistant" else "Пользователь"
@@ -77,14 +215,10 @@ def generate_summary(history: list, gate_line: str, gate_desc: str) -> str:
         {"role": "user", "content": prompt}
     ]
     
-    # Если большая модель отличается от основной, пробуем вызвать её
-    if BIG_MODEL_NAME != MODEL_NAME:
-        try:
-            return call_model(messages, BIG_MODEL_NAME)
-        except Exception as e:
-            print(f"Ошибка при вызове большой модели: {e}. Использую маленькую.")
-            # fallback на маленькую модель
-            return call_model(messages, MODEL_NAME)
-    else:
-        # Если большая не задана отдельно, используем основную
-        return call_model(messages, MODEL_NAME)
+    # Пытаемся вызвать большую модель
+    try:
+        return call_model(messages, model_name=get_big_model_name(), metadata={"function": "generate_summary", "gate": gate_line})
+    except Exception as e:
+        # Если большая не доступна — используем маленькую
+        print(f"[WARN] Ошибка большой модели: {e}. Использую маленькую.")
+        return call_model(messages, metadata={"function": "generate_summary_fallback", "gate": gate_line})
